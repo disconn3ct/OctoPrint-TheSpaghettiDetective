@@ -8,7 +8,6 @@ import json
 import re
 import os, sys, time
 import requests
-import raven
 import backoff
 
 from .ws import WebSocketClient, WebSocketClientException
@@ -85,11 +84,6 @@ class TheSpaghettiDetectivePlugin(
     ##~~ SettingsPlugin mixin
 
     def get_settings_defaults(self):
-        # Initialize sentry the first opportunity when `self._plugin_version` is available. Is there a better place for it?
-        self.sentry = raven.Client(
-            'https://f0356e1461124e69909600a64c361b71:bdf215f6e71b48dc90d28fb89a4f8238@sentry.thespaghettidetective.com/4?verify_ssl=0',
-            release=self._plugin_version
-            )
 
         return dict(
             endpoint_prefix='https://app.thespaghettidetective.com',
@@ -170,7 +164,6 @@ class TheSpaghettiDetectivePlugin(
                 if event_payload:
                     self.post_printer_status(event_payload)
         except Exception as e:
-            self.sentry.captureException(tags=get_tags())
             _logger.exception('Exception in event handler.')
 
 
@@ -208,13 +201,12 @@ class TheSpaghettiDetectivePlugin(
         get_tags() # init tags to minimize risk of race condition
 
         self.user_account = self.wait_for_auth_token().get('user', DEFAULT_USER_ACCOUNT)
-        self.sentry.user_context({'id': self.auth_token()})
         _logger.info('User account: {}'.format(self.user_account))
         _logger.debug('Plugin settings: {}'.format(self._settings.get_all_data()))
 
         if self.user_account.get('is_pro') and not self._settings.get(["disable_video_streaming"]):
             _logger.info('Starting webcam streamer')
-            self.webcam_streamer = WebcamStreamer(self, self.sentry)
+            self.webcam_streamer = WebcamStreamer(self)
             stream_thread = threading.Thread(target=self.webcam_streamer.video_pipeline)
             stream_thread.daemon = True
             stream_thread.start()
@@ -235,7 +227,6 @@ class TheSpaghettiDetectivePlugin(
                 self.error_tracker.add_connection_error('server')
                 backoff.more(e)
             except Exception as e:
-                self.sentry.captureException(tags=get_tags())
                 self.error_tracker.add_connection_error('server')
                 backoff.more(e)
 
@@ -326,7 +317,6 @@ class TheSpaghettiDetectivePlugin(
                     self.jpeg_poster.post_jpeg_if_needed(force=True)
 
         except:
-            self.sentry.captureException(tags=get_tags())
             _logger.exception('Exception during server message processing.')
 
     #~~ helper methods

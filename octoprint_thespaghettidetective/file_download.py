@@ -14,25 +14,21 @@ class FileDownloader:
         self._print_event_tracker = _print_event_tracker
 
     def download(self, gcode_file):
-        try:
-            _logger.warn('Received download command for {} '.format(gcode_file))
+      _logger.warn('Received download command for {} '.format(gcode_file))
 
-            if self._print_event_tracker.get_tsd_gcode_file_id() or self.plugin._printer.get_current_data().get('state', {}).get('text') != 'Operational':
-                return {'error': 'Currently downloading or printing!'}
+      if self._print_event_tracker.get_tsd_gcode_file_id() or self.plugin._printer.get_current_data().get('state', {}).get('text') != 'Operational':
+          return {'error': 'Currently downloading or printing!'}
 
-            self._print_event_tracker.set_tsd_gcode_file_id(gcode_file['id'])
+      self._print_event_tracker.set_tsd_gcode_file_id(gcode_file['id'])
 
-            self.__ensure_storage__()
-            target_path = os.path.join(self.g_code_folder, gcode_file['safe_filename'])
+      self.__ensure_storage__()
+      target_path = os.path.join(self.g_code_folder, gcode_file['safe_filename'])
 
-            print_thread = threading.Thread(target=self.__download_and_print__, args=(gcode_file,target_path))
-            print_thread.daemon = True
-            print_thread.start()
+      print_thread = threading.Thread(target=self.__download_and_print__, args=(gcode_file,target_path))
+      print_thread.daemon = True
+      print_thread.start()
 
-            return {'target_path': target_path}
-
-        except Exception as e:
-            self.plugin.sentry.captureException(tags=get_tags())
+      return {'target_path': target_path}
 
     def __download_and_print__(self, gcode_file, target_path):
         r = requests.get(gcode_file['url'], allow_redirects=True)

@@ -42,9 +42,8 @@ PI_CAM_RESOLUTIONS = {
 
 class WebcamStreamer:
 
-    def __init__(self, plugin, sentry):
+    def __init__(self, plugin):
         self.plugin = plugin
-        self.sentry = sentry
 
         self.janus_ws_backoff = ExpoBackoff(120)
         self.pi_camera = None
@@ -93,7 +92,7 @@ class WebcamStreamer:
             # Use GStreamer for USB Camera. When it's used for Pi Camera it has problems (video is not playing. Not sure why)
             if not self.pi_camera:
                 self.start_janus()
-                self.webcam_server = UsbCamWebServer(self.sentry)
+                self.webcam_server = UsbCamWebServer()
                 self.webcam_server.start()
 
                 self.start_gst_memory_guard()
@@ -104,7 +103,7 @@ class WebcamStreamer:
                 self.start_janus()
                 self.start_ffmpeg()
 
-                self.webcam_server = PiCamWebServer(self.pi_camera, self.sentry)
+                self.webcam_server = PiCamWebServer(self.pi_camera)
                 self.webcam_server.start()
                 self.pi_camera.start_recording(self.ffmpeg_proc.stdin, format='h264', quality=23, intra_period=25, bitrate=self.bitrate, profile='baseline')
                 self.pi_camera.wait_recording(0)
@@ -114,7 +113,6 @@ class WebcamStreamer:
 
             time.sleep(3)    # Wait for Flask to start running. Otherwise we will get connection refused when trying to post to '/shutdown'
             self.restore()
-            self.sentry.captureException(tags=get_tags())
             exc_type, exc_obj, exc_tb = sys.exc_info()
             _logger.error(exc_obj)
             return
@@ -148,7 +146,6 @@ class WebcamStreamer:
                 elif not self.shutting_down:
                     self.janus_proc.wait()
                     msg = 'Janus quit! This should not happen. Exit code: {}'.format(self.janus_proc.returncode)
-                    self.sentry.captureMessage(msg, tags=get_tags())
                     janus_backoff.more(msg)
                     self.janus_proc = subprocess.Popen(janus_cmd.split(), stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 
@@ -202,9 +199,8 @@ class WebcamStreamer:
                         return
 
                     returncode = self.ffmpeg_proc.wait()
-                    msg = 'STDERR:\n{}\n'.format('\n'.join(ring_buffer))
+                    msg = 'ffmpeg quit! This should not happen. Exit code: {}\nSTDERR:\n{}\n'.format(returncode,'\n'.join(ring_buffer))
                     _logger.error(msg)
-                    self.sentry.captureMessage('ffmpeg quit! This should not happen. Exit code: {}'.format(returncode), tags=get_tags())
                     return
                 else:
                     ring_buffer.append(err)
@@ -247,7 +243,6 @@ class WebcamStreamer:
                     returncode = self.gst_proc.wait()
                     msg = 'STDERR:\n{}\n'.format('\n'.join(ring_buffer))
                     _logger.debug(msg)
-                    self.sentry.captureMessage('GST exited un-expectedly. Exit code: {}'.format(returncode), tags=get_tags())
                     gst_backoff.more('GST exited un-expectedly. Exit code: {}'.format(returncode))
 
                     ring_buffer = deque(maxlen=50)
@@ -306,8 +301,7 @@ class WebcamStreamer:
 
 class UsbCamWebServer:
 
-    def __init__(self, sentry):
-        self.sentry = sentry
+    def __init__(self):
         self.web_server = None
 
     def mjpeg_generator(self):
@@ -318,9 +312,6 @@ class UsbCamWebServer:
                yield s.recv(1024)
        except GeneratorExit:
            pass
-       except:
-           self.sentry.captureException(tags=get_tags())
-           raise
        finally:
            s.close()
 
@@ -347,9 +338,6 @@ class UsbCamWebServer:
        except (socket.timeout, socket.error):
            exc_type, exc_obj, exc_tb = sys.exc_info()
            _logger.error(exc_obj)
-           raise
-       except:
-           self.sentry.captureException(tags=get_tags())
            raise
        finally:
            s.close()
@@ -379,8 +367,7 @@ class UsbCamWebServer:
 
 
 class PiCamWebServer:
-    def __init__(self, camera, sentry):
-        self.sentry = sentry
+    def __init__(self, camera):
         self.pi_camera = camera
         self.img_q = queue.Queue(maxsize=1)
         self.last_capture = 0
@@ -388,7 +375,6 @@ class PiCamWebServer:
         self.web_server = None
 
     def capture_forever(self):
-      try:
         bio = io.BytesIO()
         for foo in self.pi_camera.capture_continuous(bio, format='jpeg', use_video_port=True):
             bio.seek(0)
@@ -401,9 +387,6 @@ class PiCamWebServer:
                 self.last_capture = time.time()
 
             self.img_q.put(chunk)
-      except:
-        self.sentry.captureException(tags=get_tags())
-        raise
 
     def mjpeg_generator(self, boundary):
       try:
@@ -418,9 +401,6 @@ class PiCamWebServer:
             time.sleep(0.15) # slow down mjpeg streaming so that it won't use too much cpu or bandwidth
       except GeneratorExit:
         pass
-      except:
-        self.sentry.captureException(tags=get_tags())
-        raise
 
     def get_snapshot(self):
         possible_stale_pics = 3
