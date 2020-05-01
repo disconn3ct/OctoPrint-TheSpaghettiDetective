@@ -104,12 +104,12 @@ class TheSpaghettiDetectivePlugin(
 
                 # version check: github repository
                 type="github_release",
-                user="TheSpaghettiDetective",
+                user="Disconn3ct",
                 repo="OctoPrint-TheSpaghettiDetective",
                 current=self._plugin_version,
 
                 # update method: pip
-                pip="https://github.com/TheSpaghettiDetective/OctoPrint-TheSpaghettiDetective/archive/{target_version}.zip"
+                pip="https://github.com/disconn3ct/OctoPrint-TheSpaghettiDetective/archive/{target_version}.zip"
             )
         )
 
