@@ -12,7 +12,7 @@ import backoff
 
 from .ws import WebSocketClient, WebSocketClientException
 from .commander import Commander
-from .utils import ExpoBackoff, ConnectionErrorTracker, pi_version, get_tags, not_using_pi_camera
+from .utils import ExpoBackoff, ConnectionErrorTracker, SentryWrapper, pi_version, get_tags, not_using_pi_camera
 from .print_event import PrintEventTracker
 from .webcam_stream import WebcamStreamer
 from .remote_status import RemoteStatus
@@ -64,18 +64,6 @@ class TheSpaghettiDetectivePlugin(
 	##~~ Wizard plugin mix
 
     def is_wizard_required(self):
-        beta_settings = self._settings.effective.get('plugins', {}).get('thespaghettidetective_beta')
-        if beta_settings:  # Beta testers
-            beta_migrated = os.path.join(self.get_plugin_data_folder(), '.beta_migrated')
-            if not os.path.isfile(beta_migrated):
-                with open(beta_migrated, 'a'):  # touch alpha_migrated
-                    pass
-                if beta_settings.get('auth_token'):
-                    self._settings.set(["auth_token"],beta_settings.get('auth_token'), force=True)
-                if beta_settings.get('endpoint_prefix'):
-                    self._settings.set(["endpoint_prefix"],beta_settings.get('endpoint_prefix'), force=True)
-                self._settings.save(force=True)
-
         return not self._settings.get(["auth_token"])
 
     def get_wizard_version(self):
@@ -89,6 +77,7 @@ class TheSpaghettiDetectivePlugin(
             endpoint_prefix='https://app.thespaghettidetective.com',
             disable_video_streaming=False,
             pi_cam_resolution='medium',
+            sentry_opt='out',
         )
 
     ##~~ AssetPlugin mixin
@@ -132,6 +121,8 @@ class TheSpaghettiDetectivePlugin(
             test_auth_token=["auth_token"],
             get_connection_errors=[],
             streaming=[],
+            toggle_sentry_opt=[],
+            get_sentry_opt=[],
         )
 
     def is_api_adminonly(self):
@@ -151,7 +142,15 @@ class TheSpaghettiDetectivePlugin(
         if command == "streaming":
             piCamPresent = self.webcam_streamer and self.webcam_streamer.pi_camera != None
             return flask.jsonify(dict(eligible=self.user_account.get('is_pro'), piCamPresent=piCamPresent))
-
+        if command == "get_sentry_opt":
+            sentry_opt = self._settings.get(["sentry_opt"])
+            if sentry_opt == 'out':
+                self._settings.set(["sentry_opt"], 'asked')
+                self._settings.save(force=True)
+            return flask.jsonify(dict(sentryOpt=sentry_opt))
+        if command == "toggle_sentry_opt":
+            self._settings.set(["sentry_opt"], 'out' if self._settings.get(["sentry_opt"]) == 'in' else 'in', force=True)
+            self._settings.save(force=True)
 
     ##~~ Eventhandler mixin
 
