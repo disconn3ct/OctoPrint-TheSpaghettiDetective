@@ -78,6 +78,7 @@ class TheSpaghettiDetectivePlugin(
             disable_video_streaming=False,
             pi_cam_resolution='medium',
             sentry_opt='out',
+            video_streaming_compatible_mode='auto',
         )
 
     ##~~ AssetPlugin mixin

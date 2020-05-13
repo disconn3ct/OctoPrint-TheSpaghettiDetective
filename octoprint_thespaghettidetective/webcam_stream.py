@@ -22,23 +22,35 @@ import base64
 from textwrap import wrap
 from octoprint.util import to_unicode
 
-from .utils import pi_version, ExpoBackoff, get_tags, using_pi_camera, not_using_pi_camera
+from .utils import pi_version, ExpoBackoff, get_tags, using_pi_camera, not_using_pi_camera, get_image_info
 from .ws import WebSocketClient
+from .webcam_capture import capture_jpeg, webcam_full_url
 
 _logger = logging.getLogger('octoprint.plugins.thespaghettidetective')
 
-FFMPEG = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'bin', 'ffmpeg')
+FFMPEG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'bin')
 GST_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'bin', 'gst')
 JANUS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'bin', 'janus')
 
 JANUS_SERVER = os.getenv('JANUS_SERVER', '127.0.0.1')
 
 PI_CAM_RESOLUTIONS = {
-    'low': ((320,240), (480, 270), 200000), # resolution for 4:3, 16:9, and bitrate limit
-    'medium': ((640, 480), (960, 540), 1000000),
-    'high': ((1296, 972), (1640, 922), 3000000),
-    'ultra_high': ((1640, 1232), (1920, 1080), 5000000),
+    'low': ((320,240), (480, 270)), # resolution for 4:3 and 16:9
+    'medium': ((640, 480), (960, 540)),
+    'high': ((1296, 972), (1640, 922)),
+    'ultra_high': ((1640, 1232), (1920, 1080)),
 }
+
+def bitrate_for_dim(img_w, img_h):
+    dim = img_w * img_h
+    if dim <= 480 * 270:
+        return 200000
+    if dim <= 960 * 540:
+        return 1000000
+    if dim <= 1640 * 922:
+        return 3000000
+    else:
+        return 6000000
 
 class WebcamStreamer:
 
@@ -52,7 +64,6 @@ class WebcamStreamer:
         self.gst_proc = None
         self.ffmpeg_proc = None
         self.janus_proc = None
-        self.webcamd_stopped = False
         self.shutting_down = False
 
     @backoff.on_exception(backoff.expo, Exception, max_tries=5)
@@ -62,9 +73,9 @@ class WebcamStreamer:
             using_pi_camera()
             self.pi_camera = picamera.PiCamera()
             self.pi_camera.framerate=20
-            (res_43, res_169, bitrate) = PI_CAM_RESOLUTIONS[self.plugin._settings.get(["pi_cam_resolution"])]
+            (res_43, res_169) = PI_CAM_RESOLUTIONS[self.plugin._settings.get(["pi_cam_resolution"])]
             self.pi_camera.resolution = res_169 if self.plugin._settings.effective['webcam'].get('streamRatio', '4:3') == '16:9' else res_43
-            self.bitrate = bitrate
+            self.bitrate = bitrate_for_dim(self.pi_camera.resolution[0], self.pi_camera.resolution[1])
             _logger.debug('Pi Camera: framerate: {} - bitrate: {} - resolution: {}'.format(self.pi_camera.framerate, self.bitrate, self.pi_camera.resolution))
         except picamera.exc.PiCameraError:
             not_using_pi_camera()
@@ -84,24 +95,38 @@ class WebcamStreamer:
             return
 
         try:
+            compatible_mode = self.plugin._settings.get(["video_streaming_compatible_mode"])
+
+            if compatible_mode == 'always':
+                self.start_janus()
+                self.ffmpeg_from_mjpeg()
+                return
+
             sarge.run('sudo service webcamd stop')
-            self.webcamd_stopped = True
 
             self. __init_camera__()
 
             # Use GStreamer for USB Camera. When it's used for Pi Camera it has problems (video is not playing. Not sure why)
             if not self.pi_camera:
                 self.start_janus()
+
+                try:
+                    self.start_gst()
+                except:
+                    if compatible_mode == 'never':
+                        raise
+                    self.ffmpeg_from_mjpeg()
+                    return
+
                 self.webcam_server = UsbCamWebServer()
                 self.webcam_server.start()
 
                 self.start_gst_memory_guard()
-                self.start_gst()
 
             # Use ffmpeg for Pi Camera. When it's used for USB Camera it has problems (SPS/PPS not sent in-band?)
             else:
                 self.start_janus()
-                self.start_ffmpeg()
+                self.start_ffmpeg('-re -i pipe:0 -flags:v +global_header -c:v copy', via_wrapper=False) # script wrapper would break stdin pipe
 
                 self.webcam_server = PiCamWebServer(self.pi_camera)
                 self.webcam_server.start()
@@ -184,8 +209,31 @@ class WebcamStreamer:
         wst.daemon = True
         wst.start()
 
-    def start_ffmpeg(self):
-        ffmpeg_cmd = '{} -re -i pipe:0 -c:v copy -bsf dump_extra -an -f rtp rtp://{}:8004?pkt_size=1300'.format(FFMPEG, JANUS_SERVER)
+    def ffmpeg_from_mjpeg(self):
+
+        @backoff.on_exception(backoff.expo, Exception, jitter=None, max_tries=4)
+        def wait_for_webcamd(webcam_settings):
+            return capture_jpeg(webcam_settings)
+
+        sarge.run('sudo service webcamd start')
+
+        webcam_settings = self.plugin._settings.global_get(["webcam"])
+        jpg = wait_for_webcamd(webcam_settings)
+        (_, img_w, img_h) = get_image_info(jpg)
+        stream_url = webcam_full_url(webcam_settings.get("stream", "/webcam/?action=stream"))
+        self.bitrate = bitrate_for_dim(img_w, img_h)
+
+        self.start_ffmpeg('-re -i {} -b:v {} -pix_fmt yuv420p -s {}x{} -flags:v +global_header -vcodec h264_omx'.format(stream_url, self.bitrate, img_w, img_h), via_wrapper=True)
+        return
+
+
+    def start_ffmpeg(self, ffmpeg_args, via_wrapper=False):
+        ffmpeg = os.path.join(FFMPEG_DIR, 'ffmpeg')
+        if via_wrapper:
+            ffmpeg = os.path.join(FFMPEG_DIR, 'run_ffmpeg.sh')
+
+        ffmpeg_cmd = '{} {} -bsf dump_extra -an -f rtp rtp://{}:8004?pkt_size=1300'.format(ffmpeg, ffmpeg_args, JANUS_SERVER)
+
         _logger.debug('Popen: {}'.format(ffmpeg_cmd))
         FNULL = open(os.devnull, 'w')
         self.ffmpeg_proc = subprocess.Popen(ffmpeg_cmd.split(' '), stdin=subprocess.PIPE, stdout=FNULL, stderr=subprocess.PIPE)
@@ -205,9 +253,9 @@ class WebcamStreamer:
                 else:
                     ring_buffer.append(err)
 
-        gst_thread = Thread(target=monitor_ffmpeg_process)
-        gst_thread.daemon = True
-        gst_thread.start()
+        ffmpeg_thread = Thread(target=monitor_ffmpeg_process)
+        ffmpeg_thread.daemon = True
+        ffmpeg_thread.start()
 
     def start_gst_memory_guard(self):
         # Hack to deal with gst command that causes memory leak
@@ -217,7 +265,7 @@ class WebcamStreamer:
 
 
     # gst may fail to open /dev/video0 a few times before it finally succeeds. Probably because system resources not immediately available after webcamd shuts down
-    @backoff.on_exception(backoff.expo, Exception, max_tries=8)
+    @backoff.on_exception(backoff.expo, Exception, jitter=None, max_tries=6)
     def start_gst(self):
         gst_cmd = os.path.join(GST_DIR, 'run_gst.sh')
         _logger.debug('Popen: {}'.format(gst_cmd))
@@ -289,14 +337,12 @@ class WebcamStreamer:
             except:
                 pass
 
-        if self.webcamd_stopped:
-            sarge.run('sudo service webcamd start')   # failed to start picamera. falling back to mjpeg-streamer
+        sarge.run('sudo service webcamd start')   # failed to start picamera. falling back to mjpeg-streamer
 
         self.janus_proc = None
         self.gst_proc = None
         self.ffmpeg_proc = None
         self.pi_camera = None
-        self.webcamd_stopped = False
 
 
 class UsbCamWebServer:
