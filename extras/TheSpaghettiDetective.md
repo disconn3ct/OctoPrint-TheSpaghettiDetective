@@ -10,9 +10,9 @@ license: AGPLv3
 # TODO
 date: today's date in format YYYY-MM-DD, e.g. 2015-04-21
 
-homepage: https://github.com/TheSpaghettiDetective/TheSpaghettiDetective
-source: https://github.com/TheSpaghettiDetective/TheSpaghettiDetective
-archive: https://github.com/TheSpaghettiDetective/TheSpaghettiDetective/archive/master.zip
+homepage: https://github.com/disconn3ct/TheSpaghettiDetective
+source: https://github.com/disconn3ct/TheSpaghettiDetective
+archive: https://github.com/disconn3ct/TheSpaghettiDetective/archive/master.zip
 
 # TODO
 # Set this to true if your plugin uses the dependency_links setup parameter to include
